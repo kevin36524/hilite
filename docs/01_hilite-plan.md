@@ -65,15 +65,15 @@ You run "hilite"
 - **Auth:** Claude Code OAuth creds (via adapter) OR API key
 - **Input:** Simple stdin loop
 
-| Question | `cli.py` | `claude -p` | **HiLite** |
-|----------|---------|------------|-----------|
-| What do I run? | `hermes` | `claude -p` | `hilite` |
-| Who handles input? | `cli.py` (fancy TUI) | `claude` binary | Simple `input()` loop |
-| Who calls the LLM? | `anthropic_adapter.py` | `claude` internally | `anthropic_adapter.py` |
-| Who handles the tool loop? | `conversation_loop.py` | `claude` internally | Simplified loop |
-| Who runs the tools? | Hermes tools | Claude built-in tools | HiLite tools |
-| Auth method | API key / Claude Code creds | Claude Code OAuth | **Claude Code OAuth** |
-| Can customize tools? | Yes | No (fixed set) | Yes |
+| Question                   | `cli.py`                    | `claude -p`           | **HiLite**             |
+| -------------------------- | --------------------------- | --------------------- | ---------------------- |
+| What do I run?             | `hermes`                    | `claude -p`           | `hilite`               |
+| Who handles input?         | `cli.py` (fancy TUI)        | `claude` binary       | Simple `input()` loop  |
+| Who calls the LLM?         | `anthropic_adapter.py`      | `claude` internally   | `anthropic_adapter.py` |
+| Who handles the tool loop? | `conversation_loop.py`      | `claude` internally   | Simplified loop        |
+| Who runs the tools?        | Hermes tools                | Claude built-in tools | HiLite tools           |
+| Auth method                | API key / Claude Code creds | Claude Code OAuth     | **Claude Code OAuth**  |
+| Can customize tools?       | Yes                         | No (fixed set)        | Yes                    |
 
 ---
 
