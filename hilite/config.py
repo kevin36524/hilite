@@ -38,6 +38,14 @@ def load_config() -> dict:
     # Seed default SOUL.md on first run
     ensure_default_soul(home)
 
+    # Learning loop defaults (user can override in ~/.hilite/config.yaml)
+    config.setdefault("learning_loop", {
+        "auto_skills": {"enabled": True, "min_tool_calls": 5},
+        "auto_memory": {"enabled": True, "min_turns": 3},
+        "skill_improvement": {"enabled": True},
+        "context_compression": {"enabled": True, "threshold_messages": 30},
+    })
+
     return config
 
 

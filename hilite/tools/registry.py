@@ -8,6 +8,7 @@ from typing import Any
 from anthropic.types import ToolParam
 
 from hilite.skills import load_skill
+from hilite.skills_auto import update_skill, write_auto_skill
 from hilite.tools.file import list_directory, read_file, write_file
 from hilite.tools.memory import memory_manage
 from hilite.tools.shell import execute_command, execute_python
@@ -145,6 +146,52 @@ TOOL_SCHEMAS: list[ToolParam] = [
             "required": ["name"],
         },
     ),
+    ToolParam(
+        name="skill_create",
+        description=(
+            "Create a new reusable skill from procedural knowledge. "
+            "Skills are markdown files with YAML frontmatter stored in ~/.hilite/skills/auto/."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Skill name in kebab-case (e.g., 'docker-debug').",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "One-line description of what this skill does.",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Full markdown body of the skill. Include YAML frontmatter with name, description, and optional tags.",
+                },
+            },
+            "required": ["name", "content"],
+        },
+    ),
+    ToolParam(
+        name="skill_update",
+        description=(
+            "Update an existing skill with improved content. "
+            "The skill must already exist in a discovered skill directory."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Name of the existing skill to update.",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Full updated markdown with frontmatter.",
+                },
+            },
+            "required": ["name", "content"],
+        },
+    ),
 ]
 
 # Map tool names to handler functions
@@ -156,6 +203,8 @@ TOOL_HANDLERS: dict[str, Callable[..., Any]] = {
     "execute_python": execute_python,
     "memory_manage": memory_manage,
     "skill_view": lambda name: load_skill(name),
+    "skill_create": write_auto_skill,
+    "skill_update": update_skill,
 }
 
 

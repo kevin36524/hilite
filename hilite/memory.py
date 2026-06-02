@@ -80,6 +80,10 @@ MEMORY_MGMT_INSTRUCTIONS = textwrap.dedent(
     ### Memory hygiene
     - If you learn that a previous memory is wrong, append a correction rather than deleting.
     - Periodically review memories (use `memory_manage` with action="read") to avoid stale or redundant entries.
+
+    ### Autonomous memory
+    In addition to explicit tool calls, HiLite may automatically suggest memory
+    entries after substantive conversations. These are reviewed before persistence.
     """
 )
 

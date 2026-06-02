@@ -41,6 +41,14 @@ def load_session(session_id: str) -> dict | None:
         return json.load(f)
 
 
+def load_session_metadata(session_id: str) -> dict | None:
+    """Load just the metadata portion of a session."""
+    data = load_session(session_id)
+    if data is None:
+        return None
+    return data.get("metadata")
+
+
 def list_sessions() -> list[dict]:
     """List all saved sessions (newest first)."""
     ensure_sessions_dir()
