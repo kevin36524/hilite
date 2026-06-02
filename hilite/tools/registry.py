@@ -7,7 +7,8 @@ from typing import Any
 
 from anthropic.types import ToolParam
 
-from hilite.tools.file import read_file, write_file, list_directory
+from hilite.skills import load_skill
+from hilite.tools.file import list_directory, read_file, write_file
 from hilite.tools.memory import memory_manage
 from hilite.tools.shell import execute_command, execute_python
 
@@ -127,6 +128,23 @@ TOOL_SCHEMAS: list[ToolParam] = [
             "required": ["action", "section"],
         },
     ),
+    ToolParam(
+        name="skill_view",
+        description=(
+            "Load a skill by name to get detailed instructions for a specific workflow. "
+            "Skills are reusable procedural knowledge written in markdown."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Name of the skill to load (e.g., 'slack-latest').",
+                },
+            },
+            "required": ["name"],
+        },
+    ),
 ]
 
 # Map tool names to handler functions
@@ -137,22 +155,64 @@ TOOL_HANDLERS: dict[str, Callable[..., Any]] = {
     "execute_command": execute_command,
     "execute_python": execute_python,
     "memory_manage": memory_manage,
+    "skill_view": lambda name: load_skill(name),
 }
 
 
 class ToolRegistry:
-    """Simple tool registry -- schema provider and dispatcher."""
+    """Simple tool registry -- schema provider and dispatcher.
+
+    Supports dynamic registration of MCP tools.  Built-in tools are
+    always present; MCP tools are added at ``__init__`` time when the
+    MCPClient connects to configured servers.
+    """
+
+    def __init__(self) -> None:
+        self._schemas: list[ToolParam] = list(TOOL_SCHEMAS)
+        self._handlers: dict[str, Callable[..., Any]] = dict(TOOL_HANDLERS)
+        self._mcp_client: Any = None
+
+        # Attempt MCP discovery (optional -- gracefully skips if SDK absent)
+        try:
+            from hilite.mcp.client import MCPClient
+
+            self._mcp_client = MCPClient(self)
+            self._mcp_client.discover_all()
+        except ImportError:
+            pass  # MCP SDK not installed
+        except Exception as e:
+            import sys
+
+            print(
+                f"[hilite] Warning: MCP discovery failed: {e}",
+                file=sys.stderr,
+            )
+
+    def register_mcp_tools(
+        self, schemas: list[ToolParam], handlers: dict[str, Callable[..., Any]]
+    ) -> None:
+        """Called by MCPClient after discovering tools from a server."""
+        self._schemas.extend(schemas)
+        self._handlers.update(handlers)
 
     def get_schemas(self) -> list[ToolParam]:
         """Return tool schemas for the Anthropic API."""
-        return TOOL_SCHEMAS
+        return self._schemas
 
     def execute(self, name: str, arguments: dict[str, Any]) -> Any:
         """Execute a tool by name with the given arguments."""
-        handler = TOOL_HANDLERS.get(name)
+        handler = self._handlers.get(name)
         if handler is None:
             return f"Error: Unknown tool '{name}'"
         try:
             return handler(**arguments)
         except Exception as e:
             return f"Error executing {name}: {e}"
+
+    def shutdown(self) -> None:
+        """Close MCP connections if any."""
+        if self._mcp_client is not None:
+            try:
+                self._mcp_client.shutdown()
+            except Exception:
+                pass

@@ -17,6 +17,7 @@ from anthropic.types import (
 from hilite.agent.anthropic import build_client
 from hilite.context import load_project_context
 from hilite.memory import MemoryStore, get_project_key
+from hilite.skills import build_skills_index, load_skill
 from hilite.state import generate_session_id, load_session, save_session
 from hilite.tools.registry import ToolRegistry
 
@@ -51,12 +52,15 @@ class AIAgent:
         system_prompt: str | None = None,
         max_turns: int = 50,
         session_id: str | None = None,
+        project_root: Path | None = None,
+        preload_skill: str | None = None,
     ):
         self.model = model
         self.max_turns = max_turns
         self.client = build_client()
         self.tools = ToolRegistry()
         self.session_id = session_id or generate_session_id()
+        self.project_root = project_root or Path.cwd()
 
         # Build the stable system prompt (frozen for the session)
         home = Path.home() / ".hilite"
@@ -74,6 +78,18 @@ class AIAgent:
                 project_context=project_context,
             )
 
+        # Inject skills index into system prompt
+        skills_index = build_skills_index(self.project_root)
+        if skills_index:
+            self.system_prompt += f"\n\n{skills_index}"
+
+        # Preload skill if requested (--skill flag)
+        self._preloaded_skill: str | None = None
+        if preload_skill:
+            skill_content = load_skill(preload_skill, self.project_root)
+            if not skill_content.startswith("Error:"):
+                self._preloaded_skill = skill_content
+
         # Load existing session if available
         session_data = load_session(self.session_id) if session_id else None
         if session_data:
@@ -83,6 +99,15 @@ class AIAgent:
 
     def run_conversation(self, user_message: str) -> str:
         """Run a full conversation turn, including any tool calls."""
+        # Prepend preloaded skill content if present
+        if self._preloaded_skill:
+            user_message = (
+                f"[Skill loaded: follow these instructions]\n\n"
+                f"{self._preloaded_skill}\n\n"
+                f"---\n\n{user_message}"
+            )
+            self._preloaded_skill = None  # only once
+
         # Add user message to history
         self.messages.append(
             MessageParam(role="user", content=user_message)
