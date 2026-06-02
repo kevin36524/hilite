@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from anthropic.types import (
     Message,
     MessageParam,
@@ -13,6 +15,8 @@ from anthropic.types import (
 )
 
 from hilite.agent.anthropic import build_client
+from hilite.context import load_project_context
+from hilite.memory import MemoryStore, get_project_key
 from hilite.state import generate_session_id, load_session, save_session
 from hilite.tools.registry import ToolRegistry
 
@@ -39,7 +43,7 @@ def _deserialize_messages(data: list[dict]) -> list[MessageParam]:
 
 
 class AIAgent:
-    """Minimal AI agent with tool-calling loop and optional session persistence."""
+    """AI agent with tool-calling loop, session persistence, and memory."""
 
     def __init__(
         self,
@@ -49,11 +53,26 @@ class AIAgent:
         session_id: str | None = None,
     ):
         self.model = model
-        self.system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
         self.max_turns = max_turns
         self.client = build_client()
         self.tools = ToolRegistry()
         self.session_id = session_id or generate_session_id()
+
+        # Build the stable system prompt (frozen for the session)
+        home = Path.home() / ".hilite"
+        project_key = get_project_key()
+        self.memory = MemoryStore(home, project_key=project_key)
+        project_context = load_project_context()
+
+        if system_prompt:
+            # User override takes precedence over SOUL.md but still gets
+            # memory blocks and project context appended.
+            self.system_prompt = system_prompt
+        else:
+            self.system_prompt = self.memory.build_system_prompt(
+                default_identity=DEFAULT_SYSTEM_PROMPT,
+                project_context=project_context,
+            )
 
         # Load existing session if available
         session_data = load_session(self.session_id) if session_id else None

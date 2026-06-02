@@ -8,6 +8,7 @@ from typing import Any
 from anthropic.types import ToolParam
 
 from hilite.tools.file import read_file, write_file, list_directory
+from hilite.tools.memory import memory_manage
 from hilite.tools.shell import execute_command, execute_python
 
 
@@ -91,6 +92,41 @@ TOOL_SCHEMAS: list[ToolParam] = [
             "required": ["code"],
         },
     ),
+    ToolParam(
+        name="memory_manage",
+        description=(
+            "Manage persistent memory. Read or append entries to the user profile "
+            "(USER.md) or environment notes (MEMORY.md). Use this to remember "
+            "important facts about the user or project for future sessions."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["read", "append"],
+                    "description": "Whether to read current entries or append a new one.",
+                },
+                "section": {
+                    "type": "string",
+                    "enum": ["user", "memory"],
+                    "description": (
+                        "Which memory file to target. 'user' = what you know about the user. "
+                        "'memory' = things you have observed about the environment."
+                    ),
+                },
+                "content": {
+                    "type": "string",
+                    "description": (
+                        "For 'append': the declarative fact to save. Write as a single "
+                        "concise sentence starting with a verb. Example: 'The user prefers "
+                        "dark mode in all tools.'"
+                    ),
+                },
+            },
+            "required": ["action", "section"],
+        },
+    ),
 ]
 
 # Map tool names to handler functions
@@ -100,6 +136,7 @@ TOOL_HANDLERS: dict[str, Callable[..., Any]] = {
     "list_directory": list_directory,
     "execute_command": execute_command,
     "execute_python": execute_python,
+    "memory_manage": memory_manage,
 }
 
 

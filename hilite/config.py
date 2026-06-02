@@ -3,6 +3,8 @@
 import os
 from pathlib import Path
 
+from hilite.memory import ensure_default_soul
+
 
 def hilite_home() -> Path:
     """Return the HiLite home directory (~/.hilite)."""
@@ -13,6 +15,7 @@ def load_config() -> dict:
     """Load configuration from env vars and optional config file.
 
     Priority: env vars > config file > defaults.
+    Also seeds a default SOUL.md on first run.
     """
     config = {
         "model": os.environ.get("HILITE_MODEL", "claude-sonnet-4-6-20250601"),
@@ -20,7 +23,8 @@ def load_config() -> dict:
     }
 
     # Optional YAML config file
-    config_file = hilite_home() / "config.yaml"
+    home = hilite_home()
+    config_file = home / "config.yaml"
     if config_file.exists():
         try:
             import yaml
@@ -30,5 +34,8 @@ def load_config() -> dict:
             config.update(file_config)
         except ImportError:
             pass
+
+    # Seed default SOUL.md on first run
+    ensure_default_soul(home)
 
     return config
