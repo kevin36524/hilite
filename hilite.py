@@ -16,6 +16,7 @@ import sys
 
 from hilite.agent.agent import AIAgent
 from hilite.config import load_config
+from hilite.constants import DEFAULT_MODEL
 from hilite.skills import list_skill_names
 from hilite.state import list_sessions
 
@@ -55,7 +56,7 @@ def main():
         return
 
     config = load_config()
-    model = args.model or config.get("model", "claude-sonnet-4-6-20250601")
+    model = args.model or config.get("model", DEFAULT_MODEL)
 
     # Read prompt
     if args.prompt:

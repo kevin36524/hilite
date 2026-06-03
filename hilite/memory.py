@@ -270,24 +270,29 @@ class MemoryStore:
         self,
         default_identity: str,
         project_context: str | None = None,
+        identity_override: str | None = None,
     ) -> str:
         """Assemble the full stable portion of the system prompt.
 
         Order:
-            1. SOUL.md (or default_identity fallback)
+            1. Identity -- ``identity_override`` if given, else SOUL.md,
+               else ``default_identity``
             2. User profile block
             3. Environment notes block (per-project)
             4. Project context block
             5. Memory management instructions
+
+        ``identity_override`` (e.g. the ``--system`` flag) takes precedence over
+        SOUL.md while still getting the memory and context blocks appended.
         """
         parts: list[str] = []
 
         # 1. Identity
-        soul = self.load_soul()
-        if soul:
-            parts.append(soul)
+        if identity_override:
+            parts.append(identity_override)
         else:
-            parts.append(default_identity)
+            soul = self.load_soul()
+            parts.append(soul if soul else default_identity)
 
         # 2. User profile (global)
         user_entries = self._read_entries(self.user_path)

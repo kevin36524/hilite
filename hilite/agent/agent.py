@@ -15,8 +15,11 @@ from anthropic.types import (
     ToolUseBlockParam,
 )
 
+import anthropic
+
 from hilite.agent.anthropic import build_client
 from hilite.config import load_config
+from hilite.constants import DEFAULT_MODEL
 from hilite.context import load_project_context
 from hilite.learning_loop import LearningLoop, LearningLoopConfig
 from hilite.memory import MemoryStore, get_project_key
@@ -52,7 +55,7 @@ class AIAgent:
 
     def __init__(
         self,
-        model: str = "claude-sonnet-4-6-20250601",
+        model: str = DEFAULT_MODEL,
         system_prompt: str | None = None,
         max_turns: int = 50,
         session_id: str | None = None,
@@ -72,15 +75,13 @@ class AIAgent:
         self.memory = MemoryStore(home, project_key=project_key)
         project_context = load_project_context()
 
-        if system_prompt:
-            # User override takes precedence over SOUL.md but still gets
-            # memory blocks and project context appended.
-            self.system_prompt = system_prompt
-        else:
-            self.system_prompt = self.memory.build_system_prompt(
-                default_identity=DEFAULT_SYSTEM_PROMPT,
-                project_context=project_context,
-            )
+        # A user-supplied system prompt overrides SOUL.md but still gets the
+        # memory blocks, project context, and management instructions appended.
+        self.system_prompt = self.memory.build_system_prompt(
+            default_identity=DEFAULT_SYSTEM_PROMPT,
+            project_context=project_context,
+            identity_override=system_prompt,
+        )
 
         # Inject skills index into system prompt
         skills_index = build_skills_index(self.project_root)
@@ -166,6 +167,13 @@ class AIAgent:
 
             # Call the model
             response = self._call_model()
+
+            if response.stop_reason == "max_tokens":
+                print(
+                    "[hilite] Warning: response truncated at max_tokens; "
+                    "output may be incomplete.",
+                    file=sys.stderr,
+                )
 
             # Extract content blocks
             content_blocks = response.content
@@ -313,11 +321,42 @@ class AIAgent:
         save_session(self.session_id, _serialize_messages(self.messages), metadata)
 
     def _call_model(self) -> Message:
-        """Call the Anthropic API with current state."""
-        return self.client.messages.create(
-            model=self.model,
-            max_tokens=4096,
-            system=self.system_prompt,
-            messages=self.messages,
-            tools=self.tools.get_schemas(),
-        )
+        """Call the Anthropic API with current state.
+
+        The system prompt is sent as a cacheable block: a ``cache_control``
+        breakpoint on the (session-frozen) system text caches the stable
+        tools + system prefix, so only the growing message tail is re-billed on
+        each turn of the tool loop.
+        """
+        try:
+            return self.client.messages.create(
+                model=self.model,
+                max_tokens=4096,
+                system=[
+                    {
+                        "type": "text",
+                        "text": self.system_prompt,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+                messages=self.messages,
+                tools=self.tools.get_schemas(),
+            )
+        except anthropic.APIStatusError as e:
+            # The SDK already retried transient 429/5xx responses; if we're here
+            # the failure persisted. Surface a clear, actionable message.
+            detail = ""
+            if e.status_code in (401, 403):
+                detail = " (check ANTHROPIC_API_KEY / Claude Code credentials)"
+            elif e.status_code == 404:
+                detail = f" (is model '{self.model}' a valid model ID?)"
+            elif e.status_code == 429:
+                retry_after = e.response.headers.get("retry-after")
+                detail = f" (rate limited{f'; retry after {retry_after}s' if retry_after else ''})"
+            elif e.status_code == 529:
+                detail = " (API overloaded -- try again shortly)"
+            raise RuntimeError(
+                f"Anthropic API error {e.status_code}{detail}: {e.message}"
+            ) from e
+        except anthropic.APIConnectionError as e:
+            raise RuntimeError(f"Could not reach the Anthropic API: {e}") from e
