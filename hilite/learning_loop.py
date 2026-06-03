@@ -11,6 +11,10 @@ import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import anthropic
+
+from hilite.constants import DEFAULT_MODEL
+
 if TYPE_CHECKING:
     from anthropic import Anthropic
 
@@ -112,7 +116,7 @@ class LearningLoopConfig:
     skill_improvement_enabled: bool = True
     context_compression_threshold: int = 30
     context_compression_enabled: bool = True
-    model: str = "claude-sonnet-4-6-20250601"
+    model: str = DEFAULT_MODEL
 
 
 # ---------------------------------------------------------------------------
@@ -129,11 +133,23 @@ class LearningLoop:
     ):
         self.client = client
         self.config = config or LearningLoopConfig()
+        # Set once a nudge hits a non-recoverable error (bad credentials or model
+        # ID). Disables the loop for the rest of the session so we don't retry a
+        # known-broken call on every turn.
+        self._disabled = False
 
     # -- nudge helper --------------------------------------------------------
 
     def _nudge(self, system_prompt: str, user_prompt: str, max_tokens: int = 4096) -> str:
-        """Make a lightweight auxiliary call to the model (no tools)."""
+        """Make a lightweight auxiliary call to the model (no tools).
+
+        Returns "" on failure. Fatal config errors (bad credentials or an
+        invalid model ID) disable the loop for the rest of the session and are
+        reported once, so a misconfiguration doesn't silently turn every
+        learning feature into a no-op.
+        """
+        if self._disabled:
+            return ""
         try:
             response = self.client.messages.create(
                 model=self.config.model,
@@ -145,8 +161,31 @@ class LearningLoop:
                 block.text for block in response.content
                 if hasattr(block, "text")
             )
+        except anthropic.APIStatusError as e:
+            if e.status_code in (401, 403, 404):
+                self._disabled = True
+                hint = (
+                    f"invalid model ID '{self.config.model}'"
+                    if e.status_code == 404
+                    else "authentication failed"
+                )
+                print(
+                    f"[hilite] Learning loop disabled for this session: "
+                    f"{hint} (API error {e.status_code}).",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"[hilite] Learning loop nudge failed "
+                    f"(API error {e.status_code}): {e.message}",
+                    file=sys.stderr,
+                )
+            return ""
         except Exception as e:
-            print(f"[hilite] Learning loop nudge failed: {e}", file=sys.stderr)
+            print(
+                f"[hilite] Learning loop nudge failed ({type(e).__name__}): {e}",
+                file=sys.stderr,
+            )
             return ""
 
     # -- context compression -------------------------------------------------

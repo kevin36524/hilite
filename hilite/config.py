@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 
+from hilite.constants import DEFAULT_MODEL
 from hilite.memory import ensure_default_soul
 
 
@@ -18,7 +19,7 @@ def load_config() -> dict:
     Also seeds a default SOUL.md on first run.
     """
     config = {
-        "model": os.environ.get("HILITE_MODEL", "claude-sonnet-4-6-20250601"),
+        "model": os.environ.get("HILITE_MODEL", DEFAULT_MODEL),
         "api_key": os.environ.get("ANTHROPIC_API_KEY"),
     }
 
