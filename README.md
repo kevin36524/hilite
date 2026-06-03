@@ -2,38 +2,76 @@
 
 Bare-bones AI agent for Claude Code CLI users. Runs locally, calls the Anthropic API directly using Claude Code credentials, with a simple tool-calling loop.
 
+## Install
+
+One line — installs the `hilite` command globally so you can run it from anywhere (like `claude`):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kevin36524/hilite/main/scripts/install.sh | bash
+```
+
+The script installs [uv](https://docs.astral.sh/uv/) if needed, installs HiLite as a uv tool, and puts `hilite` on your `PATH`. Useful flags (pass them after `| bash -s --`):
+
+```bash
+# Also prompt for an API key and store it in the macOS keychain
+curl -fsSL .../install.sh | bash -s -- --prompt-key
+
+# Minimal install (no MCP extra, pinned instead of editable)
+curl -fsSL .../install.sh | bash -s -- --no-mcp --no-editable
+```
+
+From a local checkout you can run it directly: `./scripts/install.sh` (`--help` for all options).
+
+<details>
+<summary>Manual install (without the script)</summary>
+
+```bash
+# With uv (recommended)
+uv tool install --editable ".[mcp]"
+
+# Or into the current environment
+pip install -e ".[mcp]"
+```
+</details>
+
+## Authenticate
+
+Pick one (checked in this order):
+
+1. `ANTHROPIC_API_KEY` environment variable
+2. **macOS keychain entry `hilite`** — store your key once:
+   ```bash
+   security add-generic-password -U -s "hilite" -a "$USER" -w "sk-ant-..."
+   ```
+   (or use `./scripts/install.sh --prompt-key`)
+3. Claude Code credentials — a personal `claude login` OAuth token, or the API key Claude Code stores in the keychain
+
 ## Quick Start
 
 ```bash
-# One-shot via stdin
-echo "What files are in this directory?" | python hilite.py
-
 # One-shot via arg
-python hilite.py --prompt "Explain recursion"
+hilite --prompt "Explain recursion"
+
+# One-shot via stdin
+echo "What files are in this directory?" | hilite
 
 # Continue a conversation
-python hilite.py --session 20260601-120000-001 --prompt "What was I working on?"
+hilite --session 20260601-120000-001 --prompt "What was I working on?"
 
 # List saved sessions
-python hilite.py --list-sessions
+hilite --list-sessions
 ```
 
-## Setup
-
-1. **Install dependencies:**
-   ```bash
-   pip install anthropic pyyaml
-   ```
-
-2. **Authenticate (choose one):**
-   - Set `ANTHROPIC_API_KEY` env var
-   - Or login with Claude Code: `claude login` (HiLite reads its OAuth token from the macOS keychain)
+> Not installed globally? The same commands work with `uv run hilite.py …`, `python -m hilite …`, or `python hilite.py …`.
 
 ## Architecture
 
 ```
-hilite.py              # CLI entry point
+hilite.py              # Thin launcher (python hilite.py / uv run hilite.py)
+scripts/install.sh     # Global installer
 hilite/
+├── cli.py             # CLI entry point (the `hilite` command)
+├── __main__.py        # Enables `python -m hilite`
 ├── agent/
 │   ├── agent.py       # AIAgent class (tool-calling loop)
 │   └── anthropic.py   # Auth + Anthropic client
@@ -86,7 +124,7 @@ Skills are reusable markdown files with YAML frontmatter that HiLite can load on
 
 Load a skill with `skill_view` or preload it at startup:
 ```bash
-python hilite.py --skill docker-debug "How do I fix this container?"
+hilite --skill docker-debug "How do I fix this container?"
 ```
 
 ## Learning Loop
