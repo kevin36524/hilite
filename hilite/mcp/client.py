@@ -55,11 +55,16 @@ def _ensure_mcp_loop() -> asyncio.AbstractEventLoop:
     return _mcp_loop
 
 
-def _run_on_mcp_loop(coro: Any) -> Any:
-    """Schedule *coro* on the MCP loop and block the caller until done."""
+def _run_on_mcp_loop(coro: Any, timeout: float | None = None) -> Any:
+    """Schedule *coro* on the MCP loop and block the caller until done.
+
+    A *timeout* (seconds) bounds how long the caller blocks; on expiry a
+    ``TimeoutError`` is raised. Without it a misbehaving server could hang the
+    whole CLI indefinitely.
+    """
     loop = _ensure_mcp_loop()
     future = asyncio.run_coroutine_threadsafe(coro, loop)
-    return future.result()
+    return future.result(timeout=timeout)
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +220,22 @@ class MCPClient:
         if not configs:
             return
 
-        _run_on_mcp_loop(self._async_discover_all(configs))
+        # Backstop: never let discovery block the CLI forever. Bound the whole
+        # pass by the sum of per-server connect timeouts (the per-server
+        # wait_for below is the primary guard; this catches anything it misses).
+        total_timeout = sum(
+            int(c.get("connect_timeout", 30) or 30) for c in configs.values()
+        ) + 10
+        try:
+            _run_on_mcp_loop(
+                self._async_discover_all(configs), timeout=total_timeout
+            )
+        except TimeoutError:
+            print(
+                f"[hilite] Warning: MCP discovery exceeded {total_timeout}s; "
+                "continuing without the server(s) still connecting.",
+                file=sys.stderr,
+            )
 
     async def _async_discover_all(
         self, configs: dict[str, dict[str, Any]]
@@ -237,7 +257,29 @@ class MCPClient:
         cfg = _build_transport_config(server_name, server_config)
 
         session = MCPSession(server_name, cfg)
-        await session.connect()
+        target = cfg.url or cfg.command or "?"
+        print(
+            f"[hilite] Connecting to MCP server '{server_name}' ({target}) ...",
+            file=sys.stderr,
+        )
+        try:
+            await asyncio.wait_for(session.connect(), timeout=cfg.connect_timeout)
+        except asyncio.TimeoutError:
+            try:
+                await session.close()
+            except Exception:
+                pass
+            hint = ""
+            if server_config.get("auth") == "oauth":
+                hint = (
+                    f" If it needs interactive authorization, run "
+                    f"'hilite mcp auth {server_name}' once to complete the OAuth "
+                    f"flow and cache tokens."
+                )
+            raise RuntimeError(
+                f"timed out after {cfg.connect_timeout}s during connect/initialize."
+                f"{hint}"
+            )
         self._sessions[server_name] = session
 
         tools = await session.list_tools()
@@ -360,6 +402,44 @@ class MCPClient:
 # ---------------------------------------------------------------------------
 
 
+def authenticate_and_probe(
+    server_name: str, server_config: dict[str, Any]
+) -> list[str]:
+    """Connect to a single server (running any OAuth flow), return tool names.
+
+    Runs the same connect + ``tools/list`` path that startup discovery uses,
+    on a private event loop.  Raises on failure so the caller can surface the
+    error verbatim.  Used by ``hilite mcp auth``.
+    """
+    if not _HAS_MCP:
+        raise RuntimeError(
+            "MCP SDK not installed. Install the MCP extra: "
+            "uv tool install --editable '.[mcp]'"
+        )
+
+    cfg = _build_transport_config(server_name, server_config)
+
+    async def _probe() -> list[str]:
+        # Self-contained: enter both contexts as ``async with`` so the OAuth
+        # flow, handshake, and teardown all happen in one task (no dangling
+        # async generators, no cross-task cancel-scope issues).
+        from mcp import ClientSession, Implementation
+
+        from hilite.mcp.transport import connect_transport
+
+        async with connect_transport(cfg) as (read_stream, write_stream):
+            async with ClientSession(
+                read_stream,
+                write_stream,
+                client_info=Implementation(name="hilite", version="0.1.0"),
+            ) as session:
+                await session.initialize()
+                result = await session.list_tools()
+                return [t.name for t in result.tools]
+
+    return asyncio.run(_probe())
+
+
 def _build_transport_config(
     server_name: str, config: dict[str, Any]
 ) -> TransportConfig:
@@ -383,6 +463,23 @@ def _build_transport_config(
     ssl_verify = config.get("ssl_verify", True)
     if cert or key:
         cfg = _resolve_client_cert(cfg, cert, key, ssl_verify)
+
+    # OAuth 2.1 (HTTP/SSE only) -- build the httpx.Auth provider now; the
+    # browser flow is triggered lazily by the SDK during connect.
+    if config.get("auth") == "oauth":
+        if not config.get("url"):
+            raise ValueError(
+                f"MCP server '{server_name}': auth: oauth requires a 'url' "
+                f"(OAuth is only for HTTP/SSE servers)."
+            )
+        from dataclasses import replace
+
+        from hilite.mcp.oauth import build_oauth_provider
+
+        provider = build_oauth_provider(
+            server_name, config["url"], config.get("oauth")
+        )
+        cfg = replace(cfg, oauth_provider=provider)
 
     return cfg
 
