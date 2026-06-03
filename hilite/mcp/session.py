@@ -42,7 +42,14 @@ class MCPSession:
         self._transport_ctx: Any | None = None
 
     async def connect(self) -> None:
-        """Open the transport, perform the MCP initialize handshake."""
+        """Open the transport, perform the MCP initialize handshake.
+
+        The ``ClientSession`` is entered as an async context manager so that
+        its background receive loop starts. Without this the transport reads
+        the ``initialize`` response and then blocks forever trying to hand it
+        to a reader that does not exist -- a silent hang right after protocol
+        negotiation.
+        """
         if not _HAS_MCP:
             raise RuntimeError(
                 "MCP SDK not installed. Run: pip install 'mcp>=1.0.0'"
@@ -52,15 +59,26 @@ class MCPSession:
         read_stream, write_stream = await self._transport_ctx.__aenter__()
         self._streams = (read_stream, write_stream)
 
-        self._session = ClientSession(
+        session = ClientSession(
             read_stream,
             write_stream,
             client_info=Implementation(name="hilite", version="0.1.0"),
         )
+        # Enter the session context -> starts the receive loop that routes
+        # responses back to initialize()/list_tools()/call_tool().
+        await session.__aenter__()
+        self._session = session
         await self._session.initialize()
 
     async def close(self) -> None:
         """Close the session and underlying transport."""
+        if self._session is not None:
+            try:
+                await self._session.__aexit__(None, None, None)
+            except Exception:
+                pass
+            finally:
+                self._session = None
         if self._transport_ctx is not None:
             try:
                 await self._transport_ctx.__aexit__(None, None, None)
@@ -69,7 +87,6 @@ class MCPSession:
             finally:
                 self._transport_ctx = None
                 self._streams = None
-                self._session = None
 
     async def list_tools(self) -> list[MCPTool]:
         """Return all tools exposed by this server."""
