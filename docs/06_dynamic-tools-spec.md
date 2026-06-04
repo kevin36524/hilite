@@ -110,6 +110,13 @@ factory). Built-ins are unaffected. v1 catalog:
 | `open_markdown` | frontend | `open_markdown` | no | `{title, text}` |
 | `close_artifacts` | frontend | `close_artifacts` | no | `{}` |
 | `focus_artifact` | frontend | `focus_artifact` | no | `{id}` |
+| `terminal_snapshot` | frontend | `terminal_snapshot` | **yes** | `{terminal_id?}` |
+| `terminal_send_text` | frontend | `terminal_send_text` | **yes** | `{text, submit?, terminal_id?}` |
+| `terminal_send_key` | frontend | `terminal_send_key` | **yes** | `{key, count?, terminal_id?}` |
+
+The blocking `terminal_*` tools are the first catalog tools to use the
+`ui_request`/`ui_result` round-trip; see
+[`07_terminal-control-tools-spec.md`](07_terminal-control-tools-spec.md).
 
 Frontend-tool schemas steer the model to call them at the right beat (e.g.
 `open_web`: *"Open a web page in the user's artifact panel. Use when you want the
@@ -173,7 +180,10 @@ elif t == "ui_result":
 ```
 
 v1 ships the fire-and-forget tools; blocking is specified here so the wire format
-is stable, but no v1 catalog tool needs it.
+is stable, but no v1 catalog tool needs it. **(Update: the `terminal_*` tools in
+[`07_terminal-control-tools-spec.md`](07_terminal-control-tools-spec.md) are the
+first blocking catalog tools — they use exactly this `ui_request`/`ui_result`
+path.)**
 
 ### 4.3 Selecting the per-session set
 

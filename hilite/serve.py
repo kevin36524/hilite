@@ -242,7 +242,88 @@ FRONTEND_TOOL_SCHEMAS: list[ToolParam] = [
             "required": ["id"],
         },
     ),
+    ToolParam(
+        name="terminal_snapshot",
+        description=(
+            "Read what is currently displayed on the interactive terminal so you "
+            "can decide the next keystroke. Returns the rendered screen text and "
+            "cursor position. Sends no input. Use before acting, and again after "
+            "acting to see the result."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "terminal_id": {
+                    "type": "string",
+                    "description": "Which terminal (optional; defaults to the active one).",
+                },
+            },
+            "required": [],
+        },
+    ),
+    ToolParam(
+        name="terminal_send_text",
+        description=(
+            "Type text into the interactive terminal (e.g. a slash command like "
+            "'/mcp'). Returns the resulting screen. Set submit=true to press Enter "
+            "after the text."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "The text to type."},
+                "submit": {
+                    "type": "boolean",
+                    "description": "Press Enter after typing (default true).",
+                },
+                "terminal_id": {
+                    "type": "string",
+                    "description": "Which terminal (optional; defaults to the active one).",
+                },
+            },
+            "required": ["text"],
+        },
+    ),
+    ToolParam(
+        name="terminal_send_key",
+        description=(
+            "Send a special key to the interactive terminal to navigate menus "
+            "(e.g. arrow keys then Enter to pick an item). Returns the resulting "
+            "screen. Snapshot first so you know what is highlighted."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "key": {
+                    "type": "string",
+                    "enum": ["up", "down", "left", "right", "enter",
+                             "escape", "tab", "backspace", "space", "ctrl-c"],
+                    "description": "Which key to send.",
+                },
+                "count": {
+                    "type": "integer",
+                    "description": "How many times to send it (default 1).",
+                },
+                "terminal_id": {
+                    "type": "string",
+                    "description": "Which terminal (optional; defaults to the active one).",
+                },
+            },
+            "required": ["key"],
+        },
+    ),
 ]
+
+
+def _terminal_result(val: dict) -> str:
+    """Turn a ``terminal_*`` ``ui_result.value`` into a string the model reads."""
+    if isinstance(val, dict) and "error" in val:
+        return f"Error: {val['error']}"
+    val = val or {}
+    note = "" if val.get("settled", True) else \
+        " (still updating -- may be mid-render; snapshot again if needed)"
+    cur = f"cursor row {val.get('cursorRow')}, col {val.get('cursorCol')}"
+    return f"Terminal screen{note}:\n{val.get('text', '')}\n[{cur}]"
 
 
 # --- On-demand tool catalog --------------------------------------------------
@@ -307,6 +388,36 @@ TOOL_CATALOG: dict[str, CatalogEntry] = {
     "focus_artifact": CatalogEntry(
         _schema_by_name(FRONTEND_TOOL_SCHEMAS, "focus_artifact"),
         lambda interactor, ui: (lambda id: ui.action("focus_artifact", id=id)),
+    ),
+    "terminal_snapshot": CatalogEntry(
+        _schema_by_name(FRONTEND_TOOL_SCHEMAS, "terminal_snapshot"),
+        lambda interactor, ui: (
+            lambda terminal_id=None: _terminal_result(
+                interactor.ui_request("terminal_snapshot", terminal_id=terminal_id)
+            )
+        ),
+    ),
+    "terminal_send_text": CatalogEntry(
+        _schema_by_name(FRONTEND_TOOL_SCHEMAS, "terminal_send_text"),
+        lambda interactor, ui: (
+            lambda text, submit=True, terminal_id=None: _terminal_result(
+                interactor.ui_request(
+                    "terminal_send_text",
+                    text=text, submit=submit, terminal_id=terminal_id,
+                )
+            )
+        ),
+    ),
+    "terminal_send_key": CatalogEntry(
+        _schema_by_name(FRONTEND_TOOL_SCHEMAS, "terminal_send_key"),
+        lambda interactor, ui: (
+            lambda key, count=1, terminal_id=None: _terminal_result(
+                interactor.ui_request(
+                    "terminal_send_key",
+                    key=key, count=count, terminal_id=terminal_id,
+                )
+            )
+        ),
     ),
 }
 
