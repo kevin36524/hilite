@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from anthropic.types import (
@@ -61,10 +62,12 @@ class AIAgent:
         session_id: str | None = None,
         project_root: Path | None = None,
         preload_skill: str | None = None,
+        event_sink: Callable[[dict], None] | None = None,
     ):
         self.model = model
         self.max_turns = max_turns
         self.client = build_client()
+        self._event_sink = event_sink
         self.tools = ToolRegistry()
         self.session_id = session_id or generate_session_id()
         self.project_root = project_root or Path.cwd()
@@ -113,6 +116,11 @@ class AIAgent:
         config = load_config()
         ll_cfg = config.get("learning_loop", {})
         self._learning_loop = self._build_learning_loop(ll_cfg)
+
+    def _emit(self, event: dict) -> None:
+        """Forward an event to the optional event sink (serve mode)."""
+        if self._event_sink is not None:
+            self._event_sink(event)
 
     def _build_learning_loop(self, ll_cfg: dict) -> LearningLoop | None:
         """Build a LearningLoop from config, or None if disabled."""
@@ -189,7 +197,9 @@ class AIAgent:
             ]
 
             if not tool_uses:
-                # No tools called -- we're done
+                # No tools called -- we're done. The assistant text already
+                # streamed via `_call_model` (assistant_start/delta/stop), so we
+                # do not re-emit a monolithic `assistant` event here.
                 text = "\n".join(block.text for block in text_blocks)
                 self.messages.append(
                     MessageParam(
@@ -202,6 +212,8 @@ class AIAgent:
                 return text
 
             # Build assistant message with tool uses
+            # Text streamed via `_call_model`; here we only rebuild the assistant
+            # message for history (no monolithic `assistant` re-emit).
             assistant_content: list[ToolUseBlockParam | TextBlockParam] = []
             for block in text_blocks:
                 assistant_content.append(
@@ -224,7 +236,17 @@ class AIAgent:
             # Execute tools and build tool_result messages
             tool_results: list[ToolResultBlockParam] = []
             for block in tool_uses:
+                self._emit({
+                    "type": "pre_tool_use",
+                    "tool": block.name,
+                    "input": block.input,
+                })
                 result = self.tools.execute(block.name, block.input)
+                self._emit({
+                    "type": "post_tool_use",
+                    "tool": block.name,
+                    "ok": not (isinstance(result, str) and result.startswith("Error:")),
+                })
                 tool_results.append(
                     ToolResultBlockParam(
                         type="tool_result",
@@ -327,21 +349,47 @@ class AIAgent:
         breakpoint on the (session-frozen) system text caches the stable
         tools + system prefix, so only the growing message tail is re-billed on
         each turn of the tool loop.
+
+        In serve mode (``event_sink`` set) this streams text deltas through the
+        sink as ``assistant_start`` / ``assistant_delta`` / ``assistant_stop``
+        events and returns the assembled final ``Message`` -- identical in shape
+        to ``create()``, so the tool loop and message history are unaffected.
+        The one-shot ``hilite -p`` path (no sink) stays on ``create()`` and emits
+        no streaming events.
         """
+        kwargs = dict(
+            model=self.model,
+            max_tokens=4096,
+            system=[
+                {
+                    "type": "text",
+                    "text": self.system_prompt,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+            messages=self.messages,
+            tools=self.tools.get_schemas(),
+        )
         try:
-            return self.client.messages.create(
-                model=self.model,
-                max_tokens=4096,
-                system=[
-                    {
-                        "type": "text",
-                        "text": self.system_prompt,
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ],
-                messages=self.messages,
-                tools=self.tools.get_schemas(),
-            )
+            if self._event_sink is None:
+                return self.client.messages.create(**kwargs)
+
+            with self.client.messages.stream(**kwargs) as stream:
+                block_is_text = False
+                for event in stream:
+                    if event.type == "content_block_start":
+                        block_is_text = event.content_block.type == "text"
+                        if block_is_text:
+                            self._emit({"type": "assistant_start"})
+                    elif (
+                        event.type == "content_block_delta"
+                        and event.delta.type == "text_delta"
+                    ):
+                        self._emit({"type": "assistant_delta", "text": event.delta.text})
+                    elif event.type == "content_block_stop" and block_is_text:
+                        self._emit({"type": "assistant_stop"})
+                        block_is_text = False
+                return stream.get_final_message()
         except anthropic.APIStatusError as e:
             # The SDK already retried transient 429/5xx responses; if we're here
             # the failure persisted. Surface a clear, actionable message.

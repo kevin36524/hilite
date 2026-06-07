@@ -38,6 +38,42 @@ class Skill:
 
 
 # ---------------------------------------------------------------------------
+# Shared frontmatter parsing (reused by hilite_doc for HILITE.md)
+# ---------------------------------------------------------------------------
+
+
+def split_frontmatter(content: str) -> tuple[str, str]:
+    """Split ``content`` into ``(frontmatter_text, body)``.
+
+    Frontmatter is the text between a leading ``---`` and the next ``---``.
+    Returns ``("", content)`` when no frontmatter block is present.
+    """
+    if content.startswith("---"):
+        parts = content.split("---", 2)
+        if len(parts) >= 3:
+            return parts[1].strip(), parts[2].strip()
+    return "", content.strip()
+
+
+def parse_frontmatter_scalars(frontmatter: str) -> dict[str, str]:
+    """Parse simple ``key: value`` scalar lines from a frontmatter block.
+
+    Nested YAML list items (``  - foo``), blanks, and comments are ignored --
+    this is the same lightweight parser the skills loader uses, exposed so the
+    HILITE.md loader can reuse it instead of copying it.
+    """
+    out: dict[str, str] = {}
+    for line in frontmatter.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith("-"):
+            continue
+        if ":" in stripped:
+            key, value = stripped.split(":", 1)
+            out[key.strip().lower()] = value.strip().strip('"').strip("'")
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Discovery
 # ---------------------------------------------------------------------------
 
@@ -97,39 +133,37 @@ def _parse_skill(path: Path) -> Skill:
     version: str | None = None
     author: str | None = None
 
-    if content.startswith("---"):
-        parts = content.split("---", 2)
-        if len(parts) >= 3:
-            frontmatter = parts[1].strip()
-            body = parts[2].strip()
+    frontmatter, parsed_body = split_frontmatter(content)
+    if frontmatter:
+        body = parsed_body
 
-            # Simple YAML frontmatter parsing (avoid heavy dependency)
-            for line in frontmatter.splitlines():
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                if ":" in line:
-                    key, value = line.split(":", 1)
-                    key = key.strip().lower()
-                    value = value.strip().strip('"').strip("'")
+        # Simple YAML frontmatter parsing (avoid heavy dependency)
+        for line in frontmatter.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if ":" in line:
+                key, value = line.split(":", 1)
+                key = key.strip().lower()
+                value = value.strip().strip('"').strip("'")
 
-                    if key == "name":
-                        name = value or name
-                    elif key == "description":
-                        description = value
-                    elif key == "version":
-                        version = value
-                    elif key == "author":
-                        author = value
-                    elif key == "tags":
-                        # Handle [tag1, tag2] or - tag1 / - tag2
-                        if value.startswith("[") and value.endswith("]"):
-                            tags = [
-                                t.strip().strip('"').strip("'")
-                                for t in value[1:-1].split(",")
-                            ]
-                        else:
-                            tags = [value] if value else None
+                if key == "name":
+                    name = value or name
+                elif key == "description":
+                    description = value
+                elif key == "version":
+                    version = value
+                elif key == "author":
+                    author = value
+                elif key == "tags":
+                    # Handle [tag1, tag2] or - tag1 / - tag2
+                    if value.startswith("[") and value.endswith("]"):
+                        tags = [
+                            t.strip().strip('"').strip("'")
+                            for t in value[1:-1].split(",")
+                        ]
+                    else:
+                        tags = [value] if value else None
 
     # If description not in frontmatter, use first paragraph of body
     if not description:

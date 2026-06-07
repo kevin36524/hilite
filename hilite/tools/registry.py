@@ -7,9 +7,11 @@ from typing import Any
 
 from anthropic.types import ToolParam
 
+from hilite.hilite_doc import hilite_section
 from hilite.skills import load_skill
 from hilite.skills_auto import update_skill, write_auto_skill
 from hilite.tools.file import list_directory, read_file, write_file
+from hilite.tools.mcp import mcp_add_server
 from hilite.tools.memory import memory_manage
 from hilite.tools.shell import execute_command, execute_python
 
@@ -147,6 +149,28 @@ TOOL_SCHEMAS: list[ToolParam] = [
         },
     ),
     ToolParam(
+        name="hilite_section",
+        description=(
+            "Load a named section of this repo's HILITE.md project file on demand. "
+            "Only the HILITE.md header (overview + a list of available section "
+            "names) is loaded into context by default; call this to pull the full "
+            "body of a section (e.g. 'Build & test', 'Conventions') when you need it."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": (
+                        "Name of the ## section to load, as listed in the HILITE.md "
+                        "header (e.g. 'Build & test')."
+                    ),
+                },
+            },
+            "required": ["name"],
+        },
+    ),
+    ToolParam(
         name="skill_create",
         description=(
             "Create a new reusable skill from procedural knowledge. "
@@ -169,6 +193,85 @@ TOOL_SCHEMAS: list[ToolParam] = [
                 },
             },
             "required": ["name", "content"],
+        },
+    ),
+    ToolParam(
+        name="mcp_add_server",
+        description=(
+            "Register an MCP (Model Context Protocol) server so its tools become "
+            "available to hilite. Writes the definition to ~/.hilite/config.yaml "
+            "(global scope) or ./.hilite/config.yaml (project scope). The server is "
+            "connected at the NEXT hilite startup -- it is not loaded immediately. "
+            "Specify EITHER 'command' (stdio servers, e.g. an npx package) OR 'url' "
+            "(HTTP/SSE servers), not both. For secrets, prefer env values of the form "
+            "'${ENV_VAR}' so they resolve from the environment at load time rather "
+            "than being written in plaintext."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Server name; becomes the mcp_<name>_<tool> prefix (e.g. 'slack').",
+                },
+                "command": {
+                    "type": "string",
+                    "description": "Executable to spawn for a stdio server (e.g. 'npx').",
+                },
+                "args": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Arguments for the command (e.g. ['-y', '@modelcontextprotocol/server-slack']).",
+                },
+                "env": {
+                    "type": "object",
+                    "description": "Env vars for the server. Use '${VAR}' to resolve from the environment.",
+                },
+                "cwd": {
+                    "type": "string",
+                    "description": "Working directory for a stdio command.",
+                },
+                "url": {
+                    "type": "string",
+                    "description": "Server URL for an HTTP/SSE server.",
+                },
+                "transport": {
+                    "type": "string",
+                    "enum": ["streamable-http", "sse"],
+                    "description": "HTTP transport kind (default: streamable-http).",
+                },
+                "headers": {
+                    "type": "object",
+                    "description": "Extra HTTP headers for an HTTP/SSE server.",
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Per-tool-call timeout in seconds (default: 60).",
+                },
+                "connect_timeout": {
+                    "type": "integer",
+                    "description": "Initial connection timeout in seconds (default: 30).",
+                },
+                "auth": {
+                    "type": "string",
+                    "enum": ["oauth"],
+                    "description": "Set to 'oauth' for OAuth 2.1 PKCE (HTTP/SSE only).",
+                },
+                "scope": {
+                    "type": "string",
+                    "enum": ["global", "project"],
+                    "description": "Where to write: 'global' (~/.hilite, default) or 'project' (./.hilite).",
+                },
+                "enabled": {
+                    "type": "boolean",
+                    "description": "Whether to connect on startup (default: true).",
+                },
+                "overwrite": {
+                    "type": "boolean",
+                    "description": "Replace an existing server with the same name (default: false).",
+                },
+            },
+            "required": ["name"],
         },
     ),
     ToolParam(
@@ -203,8 +306,10 @@ TOOL_HANDLERS: dict[str, Callable[..., Any]] = {
     "execute_python": execute_python,
     "memory_manage": memory_manage,
     "skill_view": lambda name: load_skill(name),
+    "hilite_section": lambda name: hilite_section(name),
     "skill_create": write_auto_skill,
     "skill_update": update_skill,
+    "mcp_add_server": mcp_add_server,
 }
 
 

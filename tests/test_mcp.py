@@ -289,6 +289,201 @@ def test_resolve_env_none():
 
 
 # ---------------------------------------------------------------------------
+# Server config management (add / list / remove)
+# ---------------------------------------------------------------------------
+
+
+def test_build_server_config_stdio():
+    from hilite.mcp.manage import build_server_config
+
+    cfg = build_server_config(
+        command="npx",
+        args=["-y", "@modelcontextprotocol/server-slack"],
+        env={"SLACK_BOT_TOKEN": "${SLACK_BOT_TOKEN}"},
+    )
+    assert cfg["command"] == "npx"
+    assert cfg["args"] == ["-y", "@modelcontextprotocol/server-slack"]
+    assert cfg["env"] == {"SLACK_BOT_TOKEN": "${SLACK_BOT_TOKEN}"}
+    # None values are omitted
+    assert "url" not in cfg
+
+
+def test_build_server_config_http():
+    from hilite.mcp.manage import build_server_config
+
+    cfg = build_server_config(
+        url="https://mcp.example.com/mcp",
+        transport="sse",
+        headers={"X-Api-Key": "abc"},
+        ssl_verify=False,
+    )
+    assert cfg["url"] == "https://mcp.example.com/mcp"
+    assert cfg["transport"] == "sse"
+    assert cfg["headers"] == {"X-Api-Key": "abc"}
+    assert cfg["ssl_verify"] is False
+
+
+def test_build_server_config_requires_one_transport():
+    from hilite.mcp.manage import build_server_config
+
+    with pytest.raises(ValueError, match="either 'command'"):
+        build_server_config()
+
+
+def test_build_server_config_rejects_both_transports():
+    from hilite.mcp.manage import build_server_config
+
+    with pytest.raises(ValueError, match="not both"):
+        build_server_config(command="npx", url="https://x/mcp")
+
+
+def test_build_server_config_http_only_keys_on_stdio():
+    from hilite.mcp.manage import build_server_config
+
+    with pytest.raises(ValueError, match="HTTP/SSE"):
+        build_server_config(command="npx", transport="sse")
+
+
+def test_add_and_list_and_remove(monkeypatch, tmp_path: Path):
+    from hilite.mcp.manage import (
+        add_mcp_server,
+        build_server_config,
+        get_server_definitions,
+        remove_mcp_server,
+    )
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+
+    cfg = build_server_config(command="npx", args=["-y", "pkg"])
+    path = add_mcp_server("slack", cfg, scope="global")
+    assert path == home / ".hilite" / "config.yaml"
+
+    servers = get_server_definitions(scope="global")
+    assert servers["slack"]["command"] == "npx"
+
+    # Duplicate without overwrite fails
+    with pytest.raises(ValueError, match="already exists"):
+        add_mcp_server("slack", cfg, scope="global")
+
+    # Overwrite succeeds
+    add_mcp_server("slack", build_server_config(command="other"), scope="global",
+                   overwrite=True)
+    assert get_server_definitions(scope="global")["slack"]["command"] == "other"
+
+    assert remove_mcp_server("slack", scope="global") is True
+    assert remove_mcp_server("slack", scope="global") is False
+    assert get_server_definitions(scope="global") == {}
+
+
+def test_add_preserves_other_config_keys(monkeypatch, tmp_path: Path):
+    from hilite.mcp.manage import add_mcp_server, build_server_config
+
+    home = tmp_path / "home"
+    hilite_dir = home / ".hilite"
+    hilite_dir.mkdir(parents=True)
+    (hilite_dir / "config.yaml").write_text("model: claude-sonnet-4-6\n")
+
+    monkeypatch.setattr(Path, "home", lambda: home)
+    add_mcp_server("slack", build_server_config(command="npx"), scope="global")
+
+    import yaml
+
+    data = yaml.safe_load((hilite_dir / "config.yaml").read_text())
+    assert data["model"] == "claude-sonnet-4-6"
+    assert data["mcp_servers"]["slack"]["command"] == "npx"
+
+
+def test_add_invalid_name(monkeypatch, tmp_path: Path):
+    from hilite.mcp.manage import add_mcp_server, build_server_config
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    with pytest.raises(ValueError, match="Invalid server name"):
+        add_mcp_server("bad name!", build_server_config(command="x"))
+
+
+def test_add_project_scope(tmp_path: Path):
+    from hilite.mcp.manage import add_mcp_server, build_server_config, get_server_definitions
+
+    path = add_mcp_server(
+        "local", build_server_config(command="python", args=["server.py"]),
+        scope="project", project_root=tmp_path,
+    )
+    assert path == tmp_path / ".hilite" / "config.yaml"
+    servers = get_server_definitions(scope="project", project_root=tmp_path)
+    assert servers["local"]["command"] == "python"
+
+
+# ---------------------------------------------------------------------------
+# OAuth wiring
+# ---------------------------------------------------------------------------
+
+
+def test_build_transport_config_wires_oauth(monkeypatch, tmp_path: Path):
+    import httpx
+
+    from hilite.mcp.client import _build_transport_config
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    cfg = _build_transport_config(
+        "slack-gw",
+        {
+            "url": "https://mcp-gateway.ouryahoo.com/v1/slack/mcp",
+            "transport": "streamable-http",
+            "auth": "oauth",
+            "oauth": {"scope": "slack"},
+        },
+    )
+    assert cfg.oauth_provider is not None
+    assert isinstance(cfg.oauth_provider, httpx.Auth)
+
+
+def test_build_transport_config_oauth_requires_url():
+    from hilite.mcp.client import _build_transport_config
+
+    with pytest.raises(ValueError, match="requires a 'url'"):
+        _build_transport_config("bad", {"command": "npx", "auth": "oauth"})
+
+
+def test_oauth_provider_seeds_pre_registered_client(monkeypatch, tmp_path: Path):
+    from hilite.mcp.oauth import DiskTokenStorage, build_oauth_provider
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    build_oauth_provider(
+        "gw", "https://x/mcp",
+        {"client_id": "abc", "client_secret": "s3cret", "scope": "a"},
+    )
+    token_file = tmp_path / ".hilite" / "mcp-oauth" / "gw.json"
+    assert token_file.exists()
+    # File is owner-only readable
+    assert (token_file.stat().st_mode & 0o077) == 0
+    storage = DiskTokenStorage("gw")
+    data = storage._read()
+    assert data["client_info"]["client_id"] == "abc"
+
+
+def test_unwrap_exceptions_flattens_groups():
+    from hilite.cli import _unwrap_exceptions
+
+    leaf_a = ValueError("a")
+    leaf_b = ConnectionError("b")
+    group = ExceptionGroup("outer", [ExceptionGroup("inner", [leaf_a]), leaf_b])
+    leaves = _unwrap_exceptions(group)
+    assert leaf_a in leaves and leaf_b in leaves
+    assert len(leaves) == 2
+    # A plain exception returns itself
+    assert _unwrap_exceptions(leaf_a) == [leaf_a]
+
+
+def test_is_auth_failure():
+    from hilite.mcp.oauth import is_auth_failure
+
+    assert is_auth_failure(Exception("401 Unauthorized")) is True
+    assert is_auth_failure(Exception("connection reset")) is False
+
+
+# ---------------------------------------------------------------------------
 # MCP tool name prefixing
 # ---------------------------------------------------------------------------
 
