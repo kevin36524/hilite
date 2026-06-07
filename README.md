@@ -102,6 +102,7 @@ hilite/
 | `skill_view` | Load a skill by name |
 | `skill_create` | Create a new reusable skill |
 | `skill_update` | Update an existing skill |
+| `mcp_add_server` | Register an MCP server (see below) |
 
 ## Memory
 
@@ -126,6 +127,40 @@ Load a skill with `skill_view` or preload it at startup:
 ```bash
 hilite --skill docker-debug "How do I fix this container?"
 ```
+
+## MCP Servers
+
+HiLite is an MCP client: it can connect to external MCP servers (Slack, GitHub,
+filesystem, internal APIs, …) and expose their tools as `mcp_<server>_<tool>`.
+Server definitions live in `~/.hilite/config.yaml` under `mcp_servers:`. Add one
+with the `hilite mcp` commands instead of hand-editing YAML:
+
+```bash
+# stdio server (e.g. the Slack MCP npm package).
+# Use --arg=-y for values that start with '-'.
+hilite mcp add slack --command npx \
+  --arg=-y --arg @modelcontextprotocol/server-slack \
+  --env 'SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}' --env 'SLACK_TEAM_ID=${SLACK_TEAM_ID}'
+
+# HTTP/SSE server with OAuth
+hilite mcp add gdrive --url https://mcp.example.com/mcp --transport sse \
+  --auth oauth --oauth scope=drive.readonly
+
+hilite mcp list                 # show configured servers
+hilite mcp auth slack           # connect now, run the OAuth flow, list its tools
+hilite mcp remove slack         # delete a server
+```
+
+For OAuth servers, `hilite mcp auth <name>` triggers the browser authorization
+on demand (instead of waiting for the next startup), caches the tokens, and
+prints the tools the server exposes — handy for first-time auth and debugging
+connection errors (add `--verbose` for a full traceback).
+
+`${VAR}` env values resolve from your environment at load time, so secrets stay
+out of the config file. Use `--scope project` to write to `./.hilite/config.yaml`
+instead of the global config. Servers connect at the **next** `hilite` startup —
+there's no live reload. The agent can also register servers itself via the
+`mcp_add_server` tool. Run `hilite mcp add --help` for mTLS and all other flags.
 
 ## Learning Loop
 

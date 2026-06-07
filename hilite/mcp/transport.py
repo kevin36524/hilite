@@ -95,42 +95,32 @@ async def _http_transport(
         raise RuntimeError("MCP SDK not installed. Run: pip install 'mcp>=1.0.0'")
 
     from mcp.client.sse import sse_client
-    from mcp.client.streamable_http import streamable_http_client
+    from mcp.client.streamable_http import streamablehttp_client
 
     url = cfg.url or ""
+    # mTLS/verify are injected via the client factory; OAuth (an httpx.Auth)
+    # is passed through the transport's own ``auth`` parameter.
+    factory = _make_http_client_factory(cfg.client_cert, cfg.ssl_verify)
 
     if cfg.transport == "sse":
-        # SSE transport via MCP SDK
-        factory = _make_http_client_factory(cfg.client_cert, cfg.ssl_verify)
         async with sse_client(
             url,
             headers=cfg.headers,
             timeout=cfg.connect_timeout,
             httpx_client_factory=factory,
+            auth=cfg.oauth_provider,
         ) as (read_stream, write_stream):
             yield (read_stream, write_stream)
     else:
         # Streamable HTTP (default)
-        import httpx
-
-        kwargs: dict[str, Any] = {
-            "follow_redirects": True,
-            "verify": cfg.ssl_verify,
-            "timeout": cfg.connect_timeout,
-        }
-        if cfg.headers:
-            kwargs["headers"] = cfg.headers
-        if cfg.client_cert:
-            kwargs["cert"] = cfg.client_cert
-
-        http_client = httpx.AsyncClient(**kwargs)
-        try:
-            async with streamable_http_client(
-                url, http_client=http_client
-            ) as (read_stream, write_stream, _get_session_id):
-                yield (read_stream, write_stream)
-        finally:
-            await http_client.aclose()
+        async with streamablehttp_client(
+            url,
+            headers=cfg.headers,
+            timeout=cfg.connect_timeout,
+            httpx_client_factory=factory,
+            auth=cfg.oauth_provider,
+        ) as (read_stream, write_stream, _get_session_id):
+            yield (read_stream, write_stream)
 
 
 def _make_http_client_factory(

@@ -312,6 +312,192 @@ FRONTEND_TOOL_SCHEMAS: list[ToolParam] = [
             "required": ["key"],
         },
     ),
+    # --- Cross-repo delegation (doc 13). Orchestrator-only; the front-end spawns a
+    #     scoped worker session per call and resolves the blocking ui_request with a
+    #     result contract. ---
+    ToolParam(
+        name="run_in_workspace",
+        description=(
+            "Delegate a self-contained coding task to one of the project's repos (a "
+            "'workspace', addressed by its role label like 'BE' or 'FE') and WAIT for "
+            "it. Blocks until that repo's worker finishes, then returns a result "
+            "contract: a summary, the files it changed, and any cross-repo contract "
+            "(e.g. a new endpoint signature) the next repo needs. Use when the result "
+            "must be in hand before you continue — e.g. a BE change the FE then "
+            "consumes. The worker runs with that repo's own memory and MCP config."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "workspace": {
+                    "type": "string",
+                    "description": "Which repo to run in, by role label (e.g. 'BE', 'FE') or name.",
+                },
+                "task": {
+                    "type": "string",
+                    "description": "The self-contained task for that repo's worker to carry out.",
+                },
+            },
+            "required": ["workspace", "task"],
+        },
+    ),
+    ToolParam(
+        name="dispatch_to_workspace",
+        description=(
+            "Start a coding task in one of the project's repos WITHOUT waiting. "
+            "Returns immediately with a handle; the worker runs in the background and "
+            "its result is delivered to you as a later message. Use to run "
+            "independent repos in parallel — dispatch BE and FE, narrate it, and keep "
+            "working. For dependent work where you need the result now, use "
+            "run_in_workspace instead."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "workspace": {
+                    "type": "string",
+                    "description": "Which repo to run in, by role label (e.g. 'BE', 'FE') or name.",
+                },
+                "task": {
+                    "type": "string",
+                    "description": "The self-contained task for that repo's worker to carry out.",
+                },
+            },
+            "required": ["workspace", "task"],
+        },
+    ),
+    ToolParam(
+        name="await_workspaces",
+        description=(
+            "Block until every dispatched worker in the given list of handles has "
+            "finished, then return all their result contracts together. Use for a "
+            "hard join — e.g. a final integration step that needs both the BE and FE "
+            "results in one turn. For independent work, prefer letting each "
+            "completion arrive on its own rather than blocking here."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "handles": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Handles returned by earlier dispatch_to_workspace calls.",
+                },
+            },
+            "required": ["handles"],
+        },
+    ),
+    # --- Dynamic project discovery (doc 14.1). HiLite only declares these and
+    #     proxies them over the ui_request/ui_result channel; the behavior lives
+    #     app-side (doc 14.2: write the HILITE.md + index, run the loader agent,
+    #     spawn child sessions, deliver child→parent callbacks). ---
+    ToolParam(
+        name="write_hilite_md",
+        description=(
+            "Create or refresh a repo's HILITE.md project file (the tool-managed, "
+            "progressive-disclosure context file) and its entry in the global "
+            "project index. Use after deriving a repo's context for the first time, "
+            "or when its overview/sections need updating. The frontmatter's name + "
+            "description become the repo's routing signal in the global index."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Repo root where HILITE.md should be written.",
+                },
+                "frontmatter": {
+                    "type": "object",
+                    "description": (
+                        "YAML frontmatter fields: name, description, and optionally "
+                        "project, role, siblings."
+                    ),
+                },
+                "overview": {
+                    "type": "string",
+                    "description": "The always-loaded ## Overview body (keep it to a few lines).",
+                },
+                "sections": {
+                    "type": "object",
+                    "description": (
+                        "Optional on-demand sections, as a map of section name to "
+                        "markdown body (e.g. {'Build & test': '...'})."
+                    ),
+                },
+            },
+            "required": ["path", "frontmatter", "overview"],
+        },
+    ),
+    ToolParam(
+        name="find_relevant_projects",
+        description=(
+            "Given a free-text request, find the projects/repos most relevant to it "
+            "by matching against the global project index (built from every repo's "
+            "HILITE.md name + description). Blocks until the side loader agent "
+            "resolves with the ranked matches. Use to decide which repo a task "
+            "belongs in before opening a session there."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "request": {
+                    "type": "string",
+                    "description": "The user's request or task, in their own words.",
+                },
+            },
+            "required": ["request"],
+        },
+    ),
+    ToolParam(
+        name="open_project_session",
+        description=(
+            "Open a new scoped session in a specific project/repo to carry out a "
+            "task, seeding it with context. Returns immediately (the app spawns the "
+            "child session and posts a deeplink); it does not block for the result. "
+            "Use after find_relevant_projects identifies the right repo."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "The project name (as in the index / HILITE.md frontmatter).",
+                },
+                "repo": {
+                    "type": "string",
+                    "description": "The repo path or identifier to root the new session in.",
+                },
+                "task": {
+                    "type": "string",
+                    "description": "The task for the new session to carry out.",
+                },
+                "context": {
+                    "type": "string",
+                    "description": "Optional extra context to seed the new session with.",
+                },
+            },
+            "required": ["project", "repo", "task"],
+        },
+    ),
+    ToolParam(
+        name="report_to_parent",
+        description=(
+            "Report a summary of this session's outcome back to the session that "
+            "opened it. Returns immediately. A no-op if this session has no parent, "
+            "so it is always safe to call when you finish a delegated task."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "summary": {
+                    "type": "string",
+                    "description": "A concise summary of what was accomplished, for the parent session.",
+                },
+            },
+            "required": ["summary"],
+        },
+    ),
 ]
 
 
@@ -324,6 +510,94 @@ def _terminal_result(val: dict) -> str:
         " (still updating -- may be mid-render; snapshot again if needed)"
     cur = f"cursor row {val.get('cursorRow')}, col {val.get('cursorCol')}"
     return f"Terminal screen{note}:\n{val.get('text', '')}\n[{cur}]"
+
+
+def _workspace_result(val: dict) -> str:
+    """Render a worker's result contract (doc 13 §4.3) as text the model reads."""
+    if isinstance(val, dict) and "error" in val:
+        return f"Error: {val['error']}"
+    val = val or {}
+    lines = [
+        f"Workspace: {val.get('workspace', '?')}",
+        f"Summary: {val.get('summary', '')}",
+    ]
+    files = val.get("filesChanged") or []
+    if files:
+        lines.append("Files changed:\n" + "\n".join(f"  - {f}" for f in files))
+    if val.get("buildStatus"):
+        lines.append(f"Build: {val['buildStatus']}")
+    if val.get("testStatus"):
+        lines.append(f"Tests: {val['testStatus']}")
+    if val.get("contract"):
+        lines.append(f"Contract: {val['contract']}")
+    follow = val.get("followUps") or []
+    if follow:
+        lines.append("Follow-ups:\n" + "\n".join(f"  - {x}" for x in follow))
+    return "\n".join(lines)
+
+
+def _dispatch_result(val: dict) -> str:
+    """Render the immediate handle a dispatch returns (doc 13 §4)."""
+    if isinstance(val, dict) and "error" in val:
+        return f"Error: {val['error']}"
+    val = val or {}
+    return (
+        f"Dispatched to {val.get('workspace', '?')} "
+        f"(handle {val.get('handle', '?')}, status {val.get('status', 'running')}). "
+        "It runs in the background; its result will arrive as a later message, "
+        "or call await_workspaces to block on it."
+    )
+
+
+def _await_result(val: dict) -> str:
+    """Render the list of contracts an await_workspaces barrier returns."""
+    if isinstance(val, dict) and "error" in val:
+        return f"Error: {val['error']}"
+    results = (val or {}).get("results", []) if isinstance(val, dict) else (val or [])
+    if not results:
+        return "No worker results to report."
+    return "\n\n".join(_workspace_result(r) for r in results)
+
+
+def _ack_result(val: Any, ok_msg: str) -> str:
+    """Render an acknowledgement-style ui_result the app resolves (doc 14.1).
+
+    Passes an ``error`` through, honors an explicit ``message`` or a plain
+    string, and otherwise falls back to ``ok_msg`` for fire-and-acknowledge
+    tools (``write_hilite_md`` / ``open_project_session`` / ``report_to_parent``).
+    """
+    if isinstance(val, dict) and "error" in val:
+        return f"Error: {val['error']}"
+    if isinstance(val, str) and val:
+        return val
+    if isinstance(val, dict) and val.get("message"):
+        return val["message"]
+    return ok_msg
+
+
+def _projects_result(val: Any) -> str:
+    """Render the ranked matches find_relevant_projects resolves with."""
+    if isinstance(val, dict) and "error" in val:
+        return f"Error: {val['error']}"
+    matches = (val or {}).get("matches") if isinstance(val, dict) else val
+    matches = matches or []
+    if not matches:
+        return "No matching projects found."
+    lines = ["Relevant projects:"]
+    for m in matches:
+        if not isinstance(m, dict):
+            lines.append(f"  - {m}")
+            continue
+        name = m.get("name") or m.get("project") or "?"
+        head = f"  - {name}"
+        if m.get("role"):
+            head += f" ({m['role']})"
+        if m.get("repo"):
+            head += f" — {m['repo']}"
+        lines.append(head)
+        if m.get("description"):
+            lines.append(f"      {m['description']}")
+    return "\n".join(lines)
 
 
 # --- On-demand tool catalog --------------------------------------------------
@@ -416,6 +690,77 @@ TOOL_CATALOG: dict[str, CatalogEntry] = {
                     "terminal_send_key",
                     key=key, count=count, terminal_id=terminal_id,
                 )
+            )
+        ),
+    ),
+    "run_in_workspace": CatalogEntry(
+        _schema_by_name(FRONTEND_TOOL_SCHEMAS, "run_in_workspace"),
+        lambda interactor, ui: (
+            lambda workspace, task: _workspace_result(
+                interactor.ui_request("run_in_workspace", workspace=workspace, task=task)
+            )
+        ),
+    ),
+    "dispatch_to_workspace": CatalogEntry(
+        _schema_by_name(FRONTEND_TOOL_SCHEMAS, "dispatch_to_workspace"),
+        lambda interactor, ui: (
+            lambda workspace, task: _dispatch_result(
+                interactor.ui_request("dispatch_to_workspace", workspace=workspace, task=task)
+            )
+        ),
+    ),
+    "await_workspaces": CatalogEntry(
+        _schema_by_name(FRONTEND_TOOL_SCHEMAS, "await_workspaces"),
+        lambda interactor, ui: (
+            lambda handles: _await_result(
+                interactor.ui_request("await_workspaces", handles=handles)
+            )
+        ),
+    ),
+    "write_hilite_md": CatalogEntry(
+        _schema_by_name(FRONTEND_TOOL_SCHEMAS, "write_hilite_md"),
+        lambda interactor, ui: (
+            lambda path, frontmatter, overview, sections=None: _ack_result(
+                interactor.ui_request(
+                    "write_hilite_md",
+                    path=path,
+                    frontmatter=frontmatter,
+                    overview=overview,
+                    sections=sections,
+                ),
+                f"Wrote HILITE.md for {path}.",
+            )
+        ),
+    ),
+    "find_relevant_projects": CatalogEntry(
+        _schema_by_name(FRONTEND_TOOL_SCHEMAS, "find_relevant_projects"),
+        lambda interactor, ui: (
+            lambda request: _projects_result(
+                interactor.ui_request("find_relevant_projects", request=request)
+            )
+        ),
+    ),
+    "open_project_session": CatalogEntry(
+        _schema_by_name(FRONTEND_TOOL_SCHEMAS, "open_project_session"),
+        lambda interactor, ui: (
+            lambda project, repo, task, context=None: _ack_result(
+                interactor.ui_request(
+                    "open_project_session",
+                    project=project,
+                    repo=repo,
+                    task=task,
+                    context=context,
+                ),
+                f"Opened a session in {project} ({repo}).",
+            )
+        ),
+    ),
+    "report_to_parent": CatalogEntry(
+        _schema_by_name(FRONTEND_TOOL_SCHEMAS, "report_to_parent"),
+        lambda interactor, ui: (
+            lambda summary: _ack_result(
+                interactor.ui_request("report_to_parent", summary=summary),
+                "Reported to parent session.",
             )
         ),
     ),
