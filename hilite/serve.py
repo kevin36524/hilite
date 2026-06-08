@@ -192,9 +192,15 @@ FRONTEND_TOOL_SCHEMAS: list[ToolParam] = [
     ToolParam(
         name="open_claude_cli",
         description=(
-            "Open an interactive Claude CLI terminal in the user's artifact "
-            "panel. Use when a step needs the user to run or watch the Claude "
-            "CLI (e.g. logging in)."
+            "The PRIMARY way to do real work in the current repo — coding, "
+            "edits, refactors, planning, architecture, and exploration. Open "
+            "the Claude CLI in the user's artifact panel (rooted in the repo), "
+            "then DRIVE it with terminal_send_text / terminal_snapshot / "
+            "terminal_send_key to carry out the task and observe results. Do "
+            "NOT do coding or design work yourself (read_file / execute_command "
+            "/ edits) and do NOT answer implementation or design questions "
+            "directly — hand them to the Claude CLI. Also used to let the user "
+            "run or watch the CLI (e.g. logging in)."
         ),
         input_schema={
             "type": "object",
@@ -310,6 +316,53 @@ FRONTEND_TOOL_SCHEMAS: list[ToolParam] = [
                 },
             },
             "required": ["key"],
+        },
+    ),
+    ToolParam(
+        name="terminal_wait_for_bell",
+        description=(
+            "Block until the Claude CLI needs attention — either it FINISHES a turn "
+            "and returns to the input prompt, or it shows a PERMISSION PROMPT and is "
+            "waiting for your approval. Call this ONLY right AFTER you submit work "
+            "with terminal_send_text (or answer a prompt with terminal_send_key): it "
+            "consumes nothing while waiting, then wakes you exactly when Claude is "
+            "ready. The reply's 'reason' tells you what happened: 'stop'/'idle_prompt' "
+            "= turn complete; 'permission_prompt' = it needs you to approve a tool "
+            "use (answer with terminal_send_key); 'timeout' = nothing happened in "
+            "time; 'process_exit' = the CLI quit. The reply already includes the "
+            "settled screen in 'text' — ACT ON IT DIRECTLY; only call "
+            "terminal_snapshot again if bellCount > 1 or belled is false. "
+            "DO NOT use this to wait for the CLI to START UP or become ready — no "
+            "signal fires at launch, so it will just burn the full timeout. To check "
+            "readiness after open_claude_cli, use terminal_snapshot (the input prompt "
+            "'>' means ready), then send your task and wait. On timeout, judge the "
+            "screen yourself, then wait again. Returns an error if the terminal is "
+            "not found."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "terminal_id": {
+                    "type": "string",
+                    "description": "Which terminal (optional; defaults to the active one).",
+                },
+                "timeout_ms": {
+                    "type": "integer",
+                    "description": (
+                        "How long to wait before giving up, in ms (default 600000 = "
+                        "10 min). Raise it for known-long tasks; on timeout the reply "
+                        "has belled=false so you can re-arm and wait again."
+                    ),
+                },
+                "quiet_ms": {
+                    "type": "integer",
+                    "description": (
+                        "Reserved screen-quiescence hint, in ms (default 400). The app "
+                        "settles the screen before replying; you rarely need to set this."
+                    ),
+                },
+            },
+            "required": [],
         },
     ),
     # --- Cross-repo delegation (doc 13). Orchestrator-only; the front-end spawns a
@@ -432,11 +485,13 @@ FRONTEND_TOOL_SCHEMAS: list[ToolParam] = [
     ToolParam(
         name="find_relevant_projects",
         description=(
-            "Given a free-text request, find the projects/repos most relevant to it "
-            "by matching against the global project index (built from every repo's "
-            "HILITE.md name + description). Blocks until the side loader agent "
-            "resolves with the ranked matches. Use to decide which repo a task "
-            "belongs in before opening a session there."
+            "Route a request to a DIFFERENT project than the current repo. Given "
+            "a free-text request, finds the most relevant repos by matching the "
+            "global project index (every repo's HILITE.md name + description); "
+            "blocks until the side loader agent resolves the ranked matches. Call "
+            "this ONLY when the work clearly does NOT belong to the current repo. "
+            "For work in the current repo, do NOT call this — carry it out here "
+            "by driving the Claude CLI (open_claude_cli)."
         ),
         input_schema={
             "type": "object",
@@ -452,10 +507,12 @@ FRONTEND_TOOL_SCHEMAS: list[ToolParam] = [
     ToolParam(
         name="open_project_session",
         description=(
-            "Open a new scoped session in a specific project/repo to carry out a "
+            "Open a new scoped session in ANOTHER project/repo to carry out a "
             "task, seeding it with context. Returns immediately (the app spawns the "
             "child session and posts a deeplink); it does not block for the result. "
-            "Use after find_relevant_projects identifies the right repo."
+            "Use ONLY after find_relevant_projects identifies a DIFFERENT repo — "
+            "never to open a session in the current repo (do that work here by "
+            "driving the Claude CLI)."
         ),
         input_schema={
             "type": "object",
@@ -510,6 +567,63 @@ def _terminal_result(val: dict) -> str:
         " (still updating -- may be mid-render; snapshot again if needed)"
     cur = f"cursor row {val.get('cursorRow')}, col {val.get('cursorCol')}"
     return f"Terminal screen{note}:\n{val.get('text', '')}\n[{cur}]"
+
+
+def _bell_result(val: Any) -> str:
+    """Turn a ``terminal_wait_for_bell`` ``ui_result.value`` into a string.
+
+    Leads with *why* the wait ended (bell / timeout / process_exit) and how long
+    it took, then folds in the settled screen so the model can act in one step
+    (doc 15 §4a). When the bell rang more than once, or the wait timed out, it
+    nudges the model to re-snapshot rather than trust the inlined frame.
+    """
+    if isinstance(val, dict) and "error" in val:
+        return f"Error: {val['error']}"
+    val = val if isinstance(val, dict) else {}
+
+    reason = val.get("reason", "bell")
+    waited = val.get("waitedMs")
+    waited_s = f" after {round(waited / 1000)}s" if isinstance(waited, (int, float)) else ""
+    count = val.get("bellCount")
+
+    if reason == "permission_prompt":
+        head = (f"Claude needs your approval{waited_s} — it is showing a permission "
+                "prompt and is blocked until you answer. Read the screen below and "
+                "respond with terminal_send_key (e.g. arrow keys + enter, or 'enter' "
+                "to accept the default).")
+    elif reason in ("stop", "idle_prompt"):
+        head = f"Claude finished its turn{waited_s} and is waiting at the input prompt."
+    elif reason == "bell":
+        head = f"Claude rang the terminal bell{waited_s} — it has finished and is waiting."
+    elif reason == "process_exit":
+        head = (f"The Claude CLI process exited{waited_s} before signalling. "
+                "The terminal is gone.")
+    else:  # timeout
+        head = (f"No completion signal within the timeout{waited_s} (Claude may still "
+                "be working). Judge the screen below; if it shows the idle input "
+                "prompt '>' then Claude is already done (don't wait again — you may "
+                "have waited before submitting, or for startup, which fires no "
+                "signal). Otherwise snapshot again or wait once more.")
+
+    if reason in ("bell", "stop", "idle_prompt") and isinstance(count, int) and count > 1:
+        head += (f" ({count} signals arrived while the screen settled; the frame below "
+                 "may be stale — snapshot again if it doesn't look final.)")
+
+    return f"{head}\n\n{_terminal_result(val)}"
+
+def _bell_nudge_prompt(reason: str) -> str:
+    """The synthesized prompt for an unsolicited terminal bell (doc 15 §4b). Framed
+    as a system nudge: glance at the terminal and help only if it's relevant —
+    explicitly OK to do nothing, so an incidental signal doesn't force busywork."""
+    return (
+        f"(System notice: the Claude CLI in the terminal signalled '{reason}' while "
+        "you were idle — most likely the user ran something there by hand and it just "
+        "finished. Take a quick look with terminal_snapshot. If it's relevant to "
+        "helping the user — e.g. summarize the result, flag an error, or offer a next "
+        "step — do so briefly. If it isn't something you should act on, just say so in "
+        "one line and stop. Do NOT answer prompts the user is clearly driving "
+        "themselves.)"
+    )
 
 
 def _workspace_result(val: dict) -> str:
@@ -693,6 +807,19 @@ TOOL_CATALOG: dict[str, CatalogEntry] = {
             )
         ),
     ),
+    "terminal_wait_for_bell": CatalogEntry(
+        _schema_by_name(FRONTEND_TOOL_SCHEMAS, "terminal_wait_for_bell"),
+        lambda interactor, ui: (
+            lambda terminal_id=None, timeout_ms=600_000, quiet_ms=400: _bell_result(
+                interactor.ui_request(
+                    "terminal_wait_for_bell",
+                    terminal_id=terminal_id,
+                    timeout_ms=timeout_ms,
+                    quiet_ms=quiet_ms,
+                )
+            )
+        ),
+    ),
     "run_in_workspace": CatalogEntry(
         _schema_by_name(FRONTEND_TOOL_SCHEMAS, "run_in_workspace"),
         lambda interactor, ui: (
@@ -848,6 +975,7 @@ def run_server(
         t = cmd.get("type")
         if t == "stop":
             break
+        show_prompt = True                   # whether to echo `prompt` as a user message
         if t == "start":
             os.chdir(cmd["cwd"])
             agent = AIAgent(
@@ -863,10 +991,25 @@ def run_server(
             if agent is None:                # send before start -> ignore
                 continue
             prompt = cmd["text"]
+        elif t == "terminal_bell":
+            # Unsolicited terminal attention (doc 15 §4b): a Claude CLI tab signalled
+            # while the agent was idle — likely the user ran something there by hand.
+            # Single-threaded loop ⇒ if a turn is in flight this was queued and only
+            # runs now, i.e. *between* turns (doc 13 §4.4). Nudge the agent to glance
+            # at the terminal. Skip permission_prompt: that's the user mid-command, not
+            # ours to answer.
+            if agent is None:
+                continue
+            reason = cmd.get("reason", "bell")
+            if reason == "permission_prompt":
+                continue
+            prompt = _bell_nudge_prompt(reason)
+            show_prompt = False              # system nudge, not a real user message
         else:
             continue
 
-        emit({"type": "user_prompt", "text": prompt})
+        if show_prompt:
+            emit({"type": "user_prompt", "text": prompt})
         try:
             agent.run_conversation(prompt)   # streams via event_sink
             emit({"type": "stop"})
